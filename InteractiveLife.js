@@ -320,7 +320,7 @@
     splash.innerHTML = `
       <div class="il-splash-glow"></div>
       <img src="${logoSrc}" alt="C.C.R.M" class="il-splash-logo" />
-      <div class="il-splash-title">Comunidad Cristiana Restaurando los Muros</div>
+      <div class="il-splash-title">Comunidad Cristiana Restaurando los Muros Carabobo</div>
       <div class="il-splash-sub">Reporte de métricas</div>
       <div class="il-splash-dots"><span></span><span></span><span></span></div>
     `;
