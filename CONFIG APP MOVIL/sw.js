@@ -8,7 +8,7 @@
    Estrategia: Stale-While-Revalidate
 ================================================================ */
 
-const CACHE_NAME = 'metricas-v39';
+const CACHE_NAME = 'metricas-v40';
 
 /* Archivos pre-cacheados en la instalación.
    Las rutas son absolutas desde la raíz del sitio, incluyendo el
