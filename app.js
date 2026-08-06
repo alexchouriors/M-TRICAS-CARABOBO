@@ -5413,6 +5413,44 @@ const AutoLoadEngine = {
 
 
 
+/* ════════════════════════════════════════════════════════════
+   14. PWA ENGINE — Registro del Service Worker
+   ────────────────────────────────────────────────────────────
+   Módulo independiente: no toca DataStore, AccessManager ni
+   ningún otro motor. Su única responsabilidad es registrar el
+   Service Worker una vez que la página terminó de cargar
+   (evento 'load'), igual que el resto de los módulos de app.js,
+   para mantener toda la lógica de arranque en un solo lugar.
+
+   NOTA: la ruta del archivo y el scope están adaptados a la
+   estructura real del proyecto. sw.js vive ahora en la RAÍZ del
+   sitio ('/sw.js'), no en la subcarpeta "CONFIG APP MOVIL/",
+   porque un Service Worker solo puede alcanzar como scope máximo
+   el directorio donde está ubicado (o uno inferior). Si el
+   archivo se sirviera desde una subcarpeta, sería imposible
+   registrar scope '/' — de ahí que se haya movido a la raíz.
+   Debe coincidir siempre con manifest.json (start_url/scope '/').
+   ════════════════════════════════════════════════════════════ */
+const PWAEngine = {
+  SW_PATH:  '/sw.js',
+  SW_SCOPE: '/',
+
+  init() {
+    if (!('serviceWorker' in navigator)) return;
+
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register(this.SW_PATH, { scope: this.SW_SCOPE })
+        .then(registration => {
+          console.log('ServiceWorker registrado con éxito bajo el scope:', registration.scope);
+        })
+        .catch(err => {
+          console.log('Error al registrar el ServiceWorker:', err);
+        });
+    });
+  },
+};
+
+
 document.addEventListener('DOMContentLoaded', () => {
   SessionEngine.init();
   ThemeEngine.init();
@@ -5432,6 +5470,7 @@ document.addEventListener('DOMContentLoaded', () => {
   DbDefaultEngine.init();
   TrendEngine.init();
   TrendViewEngine.init();
+  PWAEngine.init();
 
   /*
     EXTENSIBILIDAD FUTURA:

@@ -1474,19 +1474,9 @@
 <script src="InteractiveLife.js" defer></script>
 
 <!-- PWA — Registro del Service Worker
-     Repositorio: alexchouriors/M-TRICAS-CARABOBO (GitHub Pages sirve el
-     proyecto bajo el subpath "/M-TRICAS-CARABOBO/"). El scope se fija
-     explícitamente a ese subpath para que el SW controle toda la app
-     aunque el archivo físico esté en la subcarpeta "CONFIG APP MOVIL/". -->
-<script>
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker
-        .register('CONFIG APP MOVIL/sw.js', { scope: '/M-TRICAS-CARABOBO/' })
-        .then(reg => console.log('[SW] Registrado. Scope:', reg.scope))
-        .catch(err => console.error('[SW] Error al registrar:', err));
-    });
-  }
-</script>
+     Se movió a app.js (ver PWAEngine.init(), invocado dentro del
+     DOMContentLoaded principal) para mantener toda la lógica de
+     arranque de la aplicación centralizada en un único módulo
+     ES6, en vez de repartida entre index.html y app.js. -->
 </body>
 </html>
