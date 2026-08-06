@@ -1116,6 +1116,47 @@ const ChartEngine = {
     return {
       responsive: true,
       maintainAspectRatio: false,
+      /* Interactividad explícita: clic en la leyenda (mostrar/ocultar
+         series) y hover con tooltip SIEMPRE activos, sin depender de
+         que ningún override global de Chart.defaults (p. ej. la
+         animación de entrada de InteractiveLife.js) los deje intactos
+         por accidente. No se define plugins.legend.onClick a propósito:
+         cada tipo de gráfico (dona vs. barras) tiene su propio
+         comportamiento de clic por defecto en Chart.js (alternar arco
+         vs. alternar dataset) y fijar uno genérico aquí rompería el
+         otro — dejamos que Chart.js resuelva el correcto según el tipo.*/
+      events: ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove'],
+      interaction: {
+        mode: 'nearest',
+        intersect: true,
+      },
+      /* Animación corta y consistente: evita que, al cambiar de filtro
+         de grupo, el gráfico recién recreado quede "vacío" varios
+         cientos de ms mientras anima desde cero (percibido como que
+         "desaparece"). No se desactiva del todo para conservar la
+         transición suave del diseño, solo se acota su duración. */
+      animation: {
+        duration: 350,
+        easing: 'easeOutQuart',
+      },
+      /* Config explícita (y genérica, sin callbacks dependientes de
+         escalas — eso fue lo que rompía los gráficos antes) de qué
+         propiedades numéricas anima Chart.js en cada redibujado. Sin
+         esto, cada tipo de gráfico usa el set de propiedades animadas
+         que trae por defecto SU PROPIO controlador interno (el de
+         dona no es igual al de barras), lo que hacía que algunas
+         gráficas aparecieran "de golpe" mientras otras sí mostraban
+         el efecto de relleno. Al declararlo aquí, TODAS (dona,
+         embudo, barras, apiladas, ranking) animan el mismo conjunto
+         de propiedades con la misma duración/easing. */
+      animations: {
+        numbers: {
+          type: 'number',
+          properties: ['x', 'y', 'width', 'height', 'circumference', 'endAngle', 'innerRadius', 'outerRadius'],
+          duration: 350,
+          easing: 'easeOutQuart',
+        },
+      },
       plugins: {
         legend: {
           labels: {
@@ -1146,6 +1187,58 @@ const ChartEngine = {
       this.instances[id].destroy();
       delete this.instances[id];
     }
+  },
+
+  /* Actualiza SOLO los colores de tema (ticks, grid, leyenda, tooltip)
+     de los gráficos YA CREADOS, sin destruirlos ni recrearlos.
+
+     Por qué: ThemeEngine.apply() antes llamaba a renderAll(kpis) en
+     cada cambio de tema, lo que hace destroy() + new Chart() de las
+     5 gráficas de golpe — cada una arranca su animación de entrada
+     desde cero, y durante ese instante el canvas queda en blanco.
+     Al ser un clic directo del usuario sobre el botón de tema, ese
+     parpadeo se nota mucho más que en un cambio de filtro. Como los
+     DATOS no cambian al cambiar de tema (solo los colores), no hace
+     falta recrear nada: basta con mutar las opciones de color de cada
+     instancia existente y pedirle un update sin animación
+     (chart.update('none')) para que el redibujado sea instantáneo y
+     nunca pase por un estado vacío.
+
+     No toca datasets, labels ni ningún dato — solo propiedades de
+     color dentro de options. Si todavía no hay instancias (dashboard
+     vacío), no hace nada: el próximo renderAll() ya usará los nuevos
+     Chart.defaults. */
+  updateTheme(theme) {
+    const isLight = theme === 'light';
+    const textColor     = isLight ? '#0f172a'         : '#94a3b8';
+    const gridColor      = isLight ? 'rgba(0,0,0,.08)' : 'rgba(255,255,255,.04)';
+    const tooltipBg      = isLight ? '#ffffff'          : '#1c2333';
+    const tooltipBorder  = isLight ? 'rgba(0,0,0,.12)'  : 'rgba(255,255,255,.07)';
+    const tooltipTitle   = isLight ? '#0f172a'          : '#e2e8f0';
+    const tooltipBody    = isLight ? '#1e293b'          : '#94a3b8';
+
+    Object.values(this.instances).forEach(chart => {
+      if (!chart || !chart.options) return;
+
+      if (chart.options.scales) {
+        Object.values(chart.options.scales).forEach(scale => {
+          if (scale.ticks) scale.ticks.color = textColor;
+          if (scale.grid)  scale.grid.color  = gridColor;
+        });
+      }
+
+      if (chart.options.plugins?.legend?.labels) {
+        chart.options.plugins.legend.labels.color = textColor;
+      }
+      if (chart.options.plugins?.tooltip) {
+        chart.options.plugins.tooltip.backgroundColor = tooltipBg;
+        chart.options.plugins.tooltip.borderColor     = tooltipBorder;
+        chart.options.plugins.tooltip.titleColor      = tooltipTitle;
+        chart.options.plugins.tooltip.bodyColor       = tooltipBody;
+      }
+
+      chart.update('none'); // 'none' = sin animación: cambio de color instantáneo, sin parpadeo
+    });
   },
 
   /* ── Donut: Asistencia vs Inasistencia general ── */
@@ -1339,7 +1432,12 @@ const ChartEngine = {
     });
   },
 
-  /* ── Rankings de grupos — barras verticales Chart.js ── */
+  /* ── Ranking integral de grupos — barras horizontales agrupadas ──
+     Un solo gráfico que reemplaza los antiguos "Top Asistencia" y
+     "Mayor Ausentismo": muestra TODOS los grupos ordenados de mayor
+     a menor asistencia, con dos barras horizontales por grupo
+     (asistencia % en verde, ausentismo % en rojo), para ver el
+     panorama comparativo completo de un solo vistazo. */
   renderRankings(kpis) {
     const allGroups = Object.entries(kpis.byGroup).map(([name, data]) => {
       // Asistentes reales a célula = SI + nuevos en célula + nuevos en servicio
@@ -1353,55 +1451,85 @@ const ChartEngine = {
         .replace(/Ministr[ao]s?\s*/i, '')
         .replace(/Lider[a]?s?\s*/i, '')
         .trim()
-        .substring(0, 22) || name.substring(0, 22);
+        .substring(0, 26) || name.substring(0, 26);
 
       return { name, short, asistentes, ausentes, total, pctAsist, pctAus };
     });
 
-    // Top asistencia: mayor % de asistencia primero
-    const top    = [...allGroups].sort((a,b) => b.pctAsist - a.pctAsist).slice(0, 5);
-    // Mayor ausentismo: mayor % de ausencia primero
-    const bottom = [...allGroups].sort((a,b) => b.pctAus   - a.pctAus  ).slice(0, 5);
+    // Ordenado de mayor a menor asistencia — un único ranking integral
+    const ranked = [...allGroups].sort((a, b) => b.pctAsist - a.pctAsist);
 
-    this._renderRankChart('chartRankTop',    top,    'pctAsist', '#22c55e', 'rgba(34,197,94,.15)');
-    this._renderRankChart('chartRankBottom', bottom, 'pctAus',   '#ef4444', 'rgba(239,68,68,.15)');
+    this._renderCombinedRankChart('chartRankCombined', ranked);
   },
 
-  /* Renderiza un ranking como gráfico de barras verticales */
-  _renderRankChart(canvasId, items, pctField, color, bgColor) {
+  /* Renderiza el ranking integral como barras horizontales agrupadas
+     (asistencia vs ausentismo, lado a lado, por grupo). */
+  _renderCombinedRankChart(canvasId, items) {
     this.destroy(canvasId);
     const ctx = document.getElementById(canvasId);
     if (!ctx) return;
 
-    const isAttendance = (pctField === 'pctAsist');
-    const label = isAttendance ? 'Asistencia %' : 'Ausentismo %';
+    const colorAsist   = '#22c55e';
+    const bgAsist       = 'rgba(34,197,94,.15)';
+    const colorAus      = '#ef4444';
+    const bgAus          = 'rgba(239,68,68,.15)';
+
+    // Altura dinámica: más grupos → canvas más alto (evita apretujar barras)
+    const canvasEl = document.getElementById(canvasId);
+    if (canvasEl) {
+      canvasEl.style.height = Math.max(320, items.length * 38) + 'px';
+      // Fuerza un reflow ANTES de crear el chart: sin esto, Chart.js mide
+      // el canvas con el alto anterior (el del grupo previamente
+      // seleccionado) y el ResizeObserver interno lo corrige recién en
+      // un frame posterior, lo que se percibe como que el gráfico
+      // "desaparece" un instante al pasar a "Todos los grupos" (o
+      // viceversa) por el salto de tamaño.
+      void canvasEl.offsetHeight;
+    }
 
     this.instances[canvasId] = new Chart(ctx, {
       type: 'bar',
       data: {
         labels: items.map(i => i.short),
-        datasets: [{
-          label,
-          data:  items.map(i => i[pctField]),
-          backgroundColor: items.map(() => bgColor),
-          borderColor:     items.map(() => color),
-          borderWidth: 2,
-          borderRadius: 6,
-          borderSkipped: false,
-          hoverBackgroundColor: color + '88',
-        }],
+        datasets: [
+          {
+            label: 'Asistencia %',
+            data: items.map(i => i.pctAsist),
+            backgroundColor: bgAsist,
+            borderColor: colorAsist,
+            borderWidth: 2,
+            borderRadius: 5,
+            borderSkipped: false,
+            hoverBackgroundColor: colorAsist + '88',
+          },
+          {
+            label: 'Ausentismo %',
+            data: items.map(i => i.pctAus),
+            backgroundColor: bgAus,
+            borderColor: colorAus,
+            borderWidth: 2,
+            borderRadius: 5,
+            borderSkipped: false,
+            hoverBackgroundColor: colorAus + '88',
+          },
+        ],
       },
       options: {
         ...this.baseOptions(),
+        indexAxis: 'y',
         plugins: {
           ...this.baseOptions().plugins,
-          legend: { display: false },
+          legend: {
+            display: true,
+            position: 'top',
+            labels: { color: Chart.defaults.color, font: { family: 'Outfit', size: 11 }, boxWidth: 14 },
+          },
           tooltip: {
             ...this.baseOptions().plugins.tooltip,
             callbacks: {
               label: (ctx) => {
                 const item = items[ctx.dataIndex];
-                return isAttendance
+                return ctx.dataset.label === 'Asistencia %'
                   ? ` ${item.pctAsist}% asistencia (${item.asistentes}/${item.total})`
                   : ` ${item.pctAus}% ausencia (${item.ausentes}/${item.total})`;
               },
@@ -1410,15 +1538,6 @@ const ChartEngine = {
         },
         scales: {
           x: {
-            grid: { display: false },
-            ticks: {
-              color: Chart.defaults.color,
-              font: { family: 'Outfit', size: 10 },
-              maxRotation: 30,
-              minRotation: 15,
-            },
-          },
-          y: {
             beginAtZero: true,
             max: 100,
             grid: { color: 'rgba(255,255,255,.04)' },
@@ -1426,6 +1545,13 @@ const ChartEngine = {
               color: Chart.defaults.color,
               font: { family: 'Outfit', size: 10 },
               callback: v => v + '%',
+            },
+          },
+          y: {
+            grid: { display: false },
+            ticks: {
+              color: Chart.defaults.color,
+              font: { family: 'Outfit', size: 10 },
             },
           },
         },
@@ -1439,7 +1565,7 @@ const ChartEngine = {
     this.renderFunnel(kpis);
     this.renderBarGroup(kpis);
     this.renderStacked(kpis);
-    this.renderRankings(kpis);  // uses chartRankTop / chartRankBottom canvases
+    this.renderRankings(kpis);  // uses chartRankCombined canvas
   },
 };
 
@@ -1718,19 +1844,23 @@ const UIController = {
     //   this.refresh();
     // });
 
-    // Filtros: actualizar en cambio
+    // Filtros: actualizar en cambio. El filtro de Grupo Ministerial es el
+    // único que puede implicar un salto grande de volumen de datos (de un
+    // grupo específico a "Todos los grupos" o viceversa), así que es el
+    // único que dispara el overlay extendido "Recalculando…" en las
+    // gráficas (ver refresh({ groupChange })).
     ['filterGroup','filterEstado','filterCelula','filterServicio','filterNuevo']
       .forEach(id => {
         document.getElementById(id)?.addEventListener('change', () => {
           FilterEngine.read();
-          this.refresh();
+          this.refresh({ groupChange: id === 'filterGroup' });
         });
       });
 
-    // Reset filtros
+    // Reset filtros — también puede saltar de/hacia "Todos los grupos"
     document.getElementById('btnResetFilters')?.addEventListener('click', () => {
       FilterEngine.reset();
-      this.refresh();
+      this.refresh({ groupChange: true });
     });
 
     // Búsqueda en tablas
@@ -1792,8 +1922,66 @@ const UIController = {
     reader.readAsArrayBuffer(file);
   },
 
-  /* Recalcula KPIs, actualiza gráficos y tablas con filtros aplicados */
-  refresh() {
+  /* Recalcula KPIs, actualiza gráficos y tablas con filtros aplicados.
+
+     FASE 1 (síncrona, instantánea): marca los valores de las tarjetas
+     KPI como "Recalculando…" — feedback visual inmediato de que el
+     cambio de filtro sí se registró, antes de arrancar el trabajo
+     pesado (compute + render de tablas/gráficos). Si el cambio es de
+     Grupo Ministerial (groupChange:true), también cubre cada tarjeta
+     de gráfico con el mismo overlay "Recalculando…".
+
+     FASE 2 (diferida): ejecuta el mismo trabajo que antes hacía
+     refresh() de forma síncrona — ni el orden ni la lógica de
+     cómputo/filtrado cambian, solo el momento en que corre. Para
+     cambios de grupo se añade un margen deliberado (~1.8s, dentro del
+     tope de 2-3s) antes de recalcular: le da colchón al cómputo más
+     pesado (salto grande de volumen de datos, p. ej. a "Todos los
+     grupos") y, detrás del overlay, cualquier micro-lag real queda
+     disimulado en vez de sentirse como que el dashboard "se traba".
+     Para el resto de filtros (estado, célula, servicio, nuevo) el
+     comportamiento es igual de instantáneo que antes (doble rAF). */
+  refresh(opts = {}) {
+    const groupChange = !!opts.groupChange;
+
+    this._setKpisRecalculando(true);
+    if (groupChange) this._setChartsRecalculando(true);
+
+    const run = () => this._performRefresh({ groupChange });
+
+    if (groupChange) {
+      const GROUP_CHANGE_DELAY_MS = 1800; // margen deliberado — tope pedido: 2-3s
+      setTimeout(() => requestAnimationFrame(run), GROUP_CHANGE_DELAY_MS);
+    } else {
+      requestAnimationFrame(() => requestAnimationFrame(run));
+    }
+  },
+
+  /* Activa/desactiva el estado visual "Recalculando…" (amarillo, fiel
+     al tema — var(--gold)) sobre los números de las tarjetas KPI.
+     No toca TrendEngine ni ningún dato: updateKPICards() sobrescribe
+     estos mismos nodos con el valor real en cuanto termina el cómputo. */
+  _setKpisRecalculando(active) {
+    document.querySelectorAll('.kpi-value, .kpi-pct').forEach(el => {
+      el.classList.toggle('kpi-recalculando', active);
+      if (active) el.textContent = 'Recalculando…';
+    });
+  },
+
+  /* Activa/desactiva el overlay "Recalculando…" sobre cada tarjeta de
+     gráfico (.chart-card). Es puramente visual (CSS ::after, ver
+     style.css): no desmonta el canvas ni ninguna instancia de
+     Chart.js, así que ChartEngine.renderAll() de abajo sigue
+     funcionando exactamente igual. */
+  _setChartsRecalculando(active) {
+    document.querySelectorAll('.chart-card').forEach(el => {
+      el.classList.toggle('chart-recalculando', active);
+    });
+  },
+
+  /* Trabajo real de refresco — idéntico, en el mismo orden, al que
+     antes vivía directamente en refresh(). */
+  _performRefresh(opts = {}) {
     const active   = DataStore.getActiveMain();
     const filtered = DataStore.applyFilters(active);
     const kpis     = KPIEngine.compute(filtered);
@@ -1809,6 +1997,9 @@ const UIController = {
     ChartEngine.renderAll(kpis);
     TableEngine.renderAll(filtered);
     AbsenceEngine.render(filtered);  // Monitor de ausencias
+
+    this._setKpisRecalculando(false);
+    if (opts.groupChange) this._setChartsRecalculando(false);
   },
 
   /**
@@ -2490,8 +2681,16 @@ const ThemeEngine = {
     this._updateIcon(theme);
     this._updateChartDefaults(theme);
 
-    // Re-renderiza gráficos si hay datos cargados
-    if (!document.getElementById('dashboardContent').classList.contains('d-none')) {
+    // Si ya hay gráficos creados, se actualizan sus colores in-place
+    // (sin destruir/recrear) para que el cambio de tema sea instantáneo
+    // y no produzca el parpadeo de "las gráficas desaparecen".
+    const hayGraficosCreados = Object.keys(ChartEngine.instances).length > 0;
+
+    if (hayGraficosCreados) {
+      ChartEngine.updateTheme(theme);
+    } else if (!document.getElementById('dashboardContent').classList.contains('d-none')) {
+      // Respaldo: dashboard visible pero sin instancias todavía
+      // (mismo comportamiento que existía antes de este cambio).
       const active   = DataStore.getActiveMain();
       const filtered = DataStore.applyFilters(active);
       const kpis     = KPIEngine.compute(filtered);
@@ -2636,16 +2835,6 @@ const SessionEngine = {
 
   STORAGE_KEY: 'ccrm_dashboard_user',
 
-  /* Bandera efímera (sessionStorage) que le indica a init(), justo
-     después del reload que dispara changeSession(), que debe correr
-     la MISMA autocarga de archivo/tendencia predeterminados que ya
-     corre tras un login normal (ver _confirmLogin() más abajo). Se
-     lee y se borra una sola vez en init(), así que un refresh manual
-     posterior de la página (F5) NO vuelve a disparar la autocarga —
-     se preserva exactamente el comportamiento que ya existía antes
-     de este cambio para una sesión restaurada "normal". */
-  FORCE_AUTOLOAD_KEY: 'ccrm_dashboard_force_autoload',
-
   _el(id) { return document.getElementById(id); },
 
   /** Devuelve el nombre de usuario en sesión, o null si no hay sesión activa */
@@ -2657,34 +2846,6 @@ const SessionEngine = {
   /** true si hay una sesión activa */
   isLoggedIn() {
     return this.getUser() !== null;
-  },
-
-  /**
-   * Autocarga del archivo predeterminado (config.json → REPORTES/<archivo>)
-   * y, encadenado, de la tendencia predeterminada si hubiera una guardada.
-   * Extraído tal cual del flujo de _confirmLogin() (mismo overlay, mismo
-   * orden, mismo manejo de errores) para poder reutilizarlo también desde
-   * init() cuando changeSession() lo solicita explícitamente — ver
-   * FORCE_AUTOLOAD_KEY. No cambia en nada su comportamiento original.
-   */
-  _runInitialAutoLoad() {
-    if (typeof AutoLoadEngine === 'undefined') return;
-
-    InitialLoadOverlay.show();
-
-    AutoLoadEngine.loadDefaultFile()
-      .then(() => {
-        InitialLoadOverlay.setProgress(65);
-        if (typeof DbDefaultEngine !== 'undefined') {
-          return DbDefaultEngine.applyStoredTrendIfAny();
-        }
-      })
-      .catch(err => {
-        console.error('[SessionEngine] Error durante la auto-carga de la experiencia personalizada:', err);
-      })
-      .finally(() => {
-        InitialLoadOverlay.complete();
-      });
   },
 
   /* ── Muestra el overlay de login (sin animación, estado inicial) ── */
@@ -2830,24 +2991,12 @@ const SessionEngine = {
         .catch(err => console.error('[SessionEngine] Error al notificar inicio de sesión:', err));
     }
 
-    /* Auto-carga del archivo predeterminado (config.json → REPORTES/<archivo>),
-       fire-and-forget: no bloquea el fade-out del overlay de login ni el
-       login en sí. Inmediatamente DESPUÉS de que termine de cargar
-       (encadenado con .then, no en paralelo), se revisa si hay una
-       tendencia predeterminada guardada en localStorage (ver
-       DbDefaultEngine) y se aplica automáticamente.
-
-       InitialLoadOverlay envuelve esta misma llamada para mostrar la
-       pantalla "Cargando su experiencia personalizada" con una barra
-       de progreso real: 8% al empezar, 65% cuando el reporte ya
-       cargó, 100% cuando la tendencia (si había una guardada) también
-       terminó — y se desvanece con fade-out. Se usa .finally() para
-       garantizar que el overlay SIEMPRE desaparezca, incluso si algo
-       falla, sin cambiar en nada el comportamiento de
-       AutoLoadEngine/DbDefaultEngine. */
-    if (typeof AutoLoadEngine !== 'undefined') {
-      this._runInitialAutoLoad();
-    }
+    /* Auto-carga del archivo predeterminado + tendencia guardada.
+       Extraído a _autoLoadDefaultExperience() (ver más abajo) para
+       poder reutilizarlo también en init() cuando la sesión ya
+       estaba activa (p. ej. tras SwitchSessionEngine.js), caso que
+       antes se quedaba sin auto-cargar nada. */
+    this._autoLoadDefaultExperience();
 
     /* Desvanece el overlay y revela el dashboard */
     const overlay = this._el('loginOverlay');
@@ -2961,77 +3110,6 @@ const SessionEngine = {
     window.location.reload();
   },
 
-  /**
-   * Cambia la sesión activa a un nuevo usuario SIN pasar por el overlay
-   * de login completo (usado por el botón "Cambiar Sesión" del menú y
-   * su modal #modalCambiarSesion — ver index.html).
-   *
-   * Reutiliza exactamente la misma validación que _confirmLogin() contra
-   * USUARIOS_REGISTRADOS (USUARIOS.JS), y notifica el cambio por Telegram
-   * como un logout del usuario anterior seguido de un login del nuevo
-   * (mismo criterio de auditoría que ya existe para login/logout).
-   *
-   * Al final, recarga la página (igual que logout()): así se garantiza
-   * que TODO el estado en memoria (DataStore, gráficos, tablas, filtros
-   * RBAC de AccessManager) se recalcule desde cero para el nuevo usuario,
-   * sin arriesgar datos filtrados a nombre del usuario anterior.
-   *
-   * @param {string} newName - Nombre de usuario al que se desea cambiar
-   * @returns {Promise<boolean>} true si el cambio fue válido (la página
-   *          está a punto de recargarse); false si hubo un error de
-   *          validación (el modal debe mostrar el mensaje y seguir abierto).
-   */
-  async changeSession(newName) {
-    const name = (newName || '').trim();
-    if (name === '') return false;
-
-    const usuarios = await this._fetchUsuariosAutorizados();
-    if (usuarios === null) return false; // Error de red/lectura — fail-closed
-
-    const nameUpper = name.toUpperCase();
-    const isAuthorized = usuarios.some(u => String(u).trim().toUpperCase() === nameUpper);
-    if (!isAuthorized) return false;
-
-    const previousName = this.getUser();
-
-    /* Notificación de auditoría: mensaje dedicado de "cambio de sesión"
-       (usuario anterior → nuevo), en vez de un logout + login separados,
-       para que quede clarísimo en el chat de Telegram que este cambio
-       vino del menú "Cambiar Sesión" y no de un cierre de sesión real
-       seguido de un login.
-
-       IMPORTANTE: a diferencia de login/logout normales, aquí SÍ hay que
-       esperar (con un límite de 1.5s, igual que logout()) antes de
-       recargar la página. Si se dispara "fire-and-forget" y de inmediato
-       se llama a window.location.reload(), el navegador cancela el
-       fetch() en pleno vuelo y el mensaje nunca llega a Telegram — por
-       eso antes no se recibía el aviso. */
-    if (typeof TelegramEngine !== 'undefined') {
-      try {
-        await Promise.race([
-          TelegramEngine.notifySessionChange(previousName, name),
-          new Promise(resolve => setTimeout(resolve, 1500)),
-        ]);
-      } catch (err) {
-        console.error('[SessionEngine] Error al notificar cambio de sesión:', err);
-      }
-    }
-
-    sessionStorage.setItem(this.STORAGE_KEY, name);
-
-    /* Marca que, tras el reload, init() debe correr la autocarga del
-       archivo/tendencia predeterminados para el NUEVO usuario — de lo
-       contrario init() solo restaura la sesión (UI/permisos) sin volver
-       a cargar ningún reporte, y el dashboard quedaría vacío. */
-    sessionStorage.setItem(this.FORCE_AUTOLOAD_KEY, '1');
-
-    /* Recarga completa: mismo criterio que logout(), para que
-       SessionEngine.init() reconstruya la sesión y UsuarioRules
-       aplique los permisos de INTERFAZ correctos para `name`. */
-    window.location.reload();
-    return true;
-  },
-
   /* Icono por rol (LECTOR ⭐ / EDITOR ⭐⭐ / MAESTRO 👑) */
   _ROLE_ICONS: { LECTOR: '⭐', EDITOR: '⭐⭐', MAESTRO: '👑' },
   _ROLE_CLASS: { LECTOR: 'role-lector', EDITOR: 'role-editor', MAESTRO: 'role-maestro' },
@@ -3061,6 +3139,46 @@ const SessionEngine = {
     ClockEngine.start();
   },
 
+  /* ── Auto-carga del archivo predeterminado (config.json → REPORTES/<archivo>)
+       + tendencia guardada. Fire-and-forget: no bloquea el fade-out del
+       overlay de login ni el flujo que la llame. Inmediatamente DESPUÉS de
+       que termine de cargar (encadenado con .then, no en paralelo), se
+       revisa si hay una tendencia predeterminada guardada en localStorage
+       (ver DbDefaultEngine) y se aplica automáticamente.
+
+       InitialLoadOverlay envuelve esta misma llamada para mostrar la
+       pantalla "Cargando su experiencia personalizada" con una barra de
+       progreso real: 8% al empezar, 65% cuando el reporte ya cargó, 100%
+       cuando la tendencia (si había una guardada) también terminó — y se
+       desvanece con fade-out. Se usa .finally() para garantizar que el
+       overlay SIEMPRE desaparezca, incluso si algo falla, sin cambiar en
+       nada el comportamiento de AutoLoadEngine/DbDefaultEngine.
+
+       Se llama tanto desde _confirmLogin() (login normal) como desde
+       init() cuando la sesión YA estaba activa al cargar la página (p. ej.
+       tras un reload disparado por SwitchSessionEngine.js) — antes solo
+       corría en el primer caso, por lo que cambiar de sesión dejaba el
+       dashboard sin el Excel/tendencia predeterminados. ── */
+  _autoLoadDefaultExperience() {
+    if (typeof AutoLoadEngine === 'undefined') return;
+
+    InitialLoadOverlay.show();
+
+    AutoLoadEngine.loadDefaultFile()
+      .then(() => {
+        InitialLoadOverlay.setProgress(65);
+        if (typeof DbDefaultEngine !== 'undefined') {
+          return DbDefaultEngine.applyStoredTrendIfAny();
+        }
+      })
+      .catch(err => {
+        console.error('[SessionEngine] Error durante la auto-carga de la experiencia predeterminada:', err);
+      })
+      .finally(() => {
+        InitialLoadOverlay.complete();
+      });
+  },
+
   init() {
     /* Si ya existe una sesión (misma pestaña), no se muestra el login */
     if (this.isLoggedIn()) {
@@ -3069,17 +3187,10 @@ const SessionEngine = {
       /* Restaura los permisos de INTERFAZ (Usuario Rules.js) para el
          usuario ya autenticado — no afecta datos ni filtros RBAC */
       if (window.UsuarioRules) window.UsuarioRules.applyUIPermissions(this.getUser());
-
-      /* Si este reload viene de changeSession() (ver FORCE_AUTOLOAD_KEY),
-         corre la misma autocarga de archivo/tendencia predeterminados que
-         un login normal — de lo contrario el dashboard quedaría vacío
-         para el nuevo usuario. Se borra la bandera de inmediato para que
-         un F5 posterior NO vuelva a disparar la autocarga (se preserva el
-         comportamiento original de una sesión restaurada "normal"). */
-      if (sessionStorage.getItem(this.FORCE_AUTOLOAD_KEY) === '1') {
-        sessionStorage.removeItem(this.FORCE_AUTOLOAD_KEY);
-        this._runInitialAutoLoad();
-      }
+      /* Misma auto-carga que ocurre en un login normal: sin esto, un
+         reload con sesión ya activa (p. ej. tras Cambiar Sesión) dejaba
+         el dashboard vacío hasta que el usuario cargara un Excel a mano. */
+      this._autoLoadDefaultExperience();
     } else {
       this.showOverlay();
     }
@@ -3123,57 +3234,6 @@ const SessionEngine = {
         instance?.hide();
       }
       this.logout();
-    });
-
-    /* ── Modal "Cambiar Sesión" (NUEVO) ──
-       El botón que abre el modal (#btnAbrirCambiarSesion) ya usa
-       data-bs-toggle="modal" nativo de Bootstrap, así que no requiere
-       listener propio para abrirse. Aquí solo se engancha:
-         1) limpiar el input/error cada vez que el modal se abre,
-         2) el botón "Ingresar / Cambiar" (valida + llama a changeSession),
-         3) la tecla Enter dentro del input, como atajo del mismo botón. */
-    const modalCambiarSesionEl = this._el('modalCambiarSesion');
-    modalCambiarSesionEl?.addEventListener('show.bs.modal', () => {
-      const input = this._el('switchUserInput');
-      if (input) input.value = '';
-      this._el('switchUserError')?.classList.add('d-none');
-    });
-
-    const confirmarCambioSesion = async () => {
-      const input = this._el('switchUserInput');
-      const errEl = this._el('switchUserError');
-      const btn = this._el('btnConfirmarCambiarSesion');
-      const name = (input?.value || '').trim();
-
-      if (name === '') {
-        if (errEl) {
-          errEl.textContent = 'Por favor ingresa un nombre de usuario.';
-          errEl.classList.remove('d-none');
-        }
-        input?.focus();
-        return;
-      }
-
-      if (btn) btn.disabled = true;
-      const ok = await this.changeSession(name);
-      if (btn) btn.disabled = false;
-
-      /* Si `ok` es true, changeSession() ya disparó window.location.reload()
-         y esta línea nunca llega a ejecutarse en la práctica. Si es false,
-         el usuario no fue encontrado (o falló la verificación) y el modal
-         permanece abierto mostrando el error, igual que en el login normal. */
-      if (!ok) {
-        if (errEl) {
-          errEl.textContent = 'Usuario no encontrado. Verifica el nombre ingresado.';
-          errEl.classList.remove('d-none');
-        }
-        input?.focus();
-      }
-    };
-
-    this._el('btnConfirmarCambiarSesion')?.addEventListener('click', confirmarCambioSesion);
-    this._el('switchUserInput')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') confirmarCambioSesion();
     });
   },
 };
