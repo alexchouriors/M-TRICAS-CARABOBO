@@ -1,4 +1,4 @@
-# Dashboard de Asistencias — CCRM
+# Dashboard de Asistencias — CCRM CARABOBO
 
 Progressive Web App (PWA) de asistencia para una organización ministerial/iglesia. Permite cargar un reporte Excel, visualizarlo en KPIs, gráficos y tablas filtrables por Grupo Ministerial, y sincronizarlo con GitHub / Google Sheets. Construida en **JavaScript vanilla (ES6+)**, con una arquitectura modular de objetos literales (motores/"engines"), Bootstrap 5 y Chart.js.
 
