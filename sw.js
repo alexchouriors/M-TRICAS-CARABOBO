@@ -5,7 +5,7 @@
    Estrategia: Stale-While-Revalidate
 ================================================================ */
 
-const CACHE_NAME = 'metricas-v41';
+const CACHE_NAME = 'metricas-v42';
 
 const PRECACHE_URLS = [
   '/',
